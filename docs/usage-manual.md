@@ -22,6 +22,8 @@ pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
 
 # 安装后端依赖
 pip install -r requirements.txt
+
+当前直接使用 conda activate stock_analysis 切换 conda 环境即可
 ```
 
 ### 1.2 前端构建（使用 Web 界面时才需要）
