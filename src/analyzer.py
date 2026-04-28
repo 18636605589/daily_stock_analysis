@@ -129,7 +129,7 @@ def _is_value_placeholder(v: Any) -> bool:
     if isinstance(v, (int, float)) and v == 0:
         return True
     s = str(v).strip().lower()
-    return s in ("", "n/a", "na", "数据缺失", "未知", "data unavailable", "unknown", "tbd")
+    return s in ("", "n/a", "na", "数据缺失", "未知", "待补充", "data unavailable", "unknown", "tbd")
 
 
 def _safe_float(v: Any, default: float = 0.0) -> float:
@@ -258,6 +258,91 @@ def fill_price_position_if_needed(
             logger.info("[price_position] Filled placeholder fields from computed data")
     except Exception as e:
         logger.warning("[price_position] Fill failed, skipping: %s", e)
+
+
+def _fmt_price(value: Any) -> Optional[str]:
+    """Format a price-like value for fallback report text."""
+    try:
+        if _is_value_placeholder(value):
+            return None
+        return f"{float(value):.2f}元"
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_price(*values: Any) -> Optional[str]:
+    """Return the first usable formatted price."""
+    for value in values:
+        formatted = _fmt_price(value)
+        if formatted:
+            return formatted
+    return None
+
+
+def fill_actionable_fallbacks_if_needed(result: "AnalysisResult") -> None:
+    """Fill user-facing decision and sniper fields from computed dashboard data."""
+    if not result:
+        return
+    try:
+        if not result.dashboard:
+            result.dashboard = {}
+        dash = result.dashboard
+
+        core = dash.get("core_conclusion") or {}
+        dash["core_conclusion"] = core
+        one_sentence = core.get("one_sentence")
+        if _is_value_placeholder(one_sentence):
+            stock_name = result.name or result.code
+            action = result.operation_advice or "观望"
+            trend = result.trend_prediction or "趋势待确认"
+            core["one_sentence"] = f"{stock_name}当前{trend}，建议{action}，先按关键均线控制风险。"
+
+        data_perspective = dash.get("data_perspective") or {}
+        price_position = data_perspective.get("price_position") or {}
+        battle_plan = dash.get("battle_plan") or {}
+        dash["battle_plan"] = battle_plan
+        sniper = battle_plan.get("sniper_points") or {}
+        battle_plan["sniper_points"] = sniper
+
+        current = _first_price(price_position.get("current_price"))
+        ma5 = _first_price(price_position.get("ma5"))
+        ma10 = _first_price(price_position.get("ma10"))
+        ma20 = _first_price(price_position.get("ma20"))
+        support = _first_price(price_position.get("support_level"), price_position.get("ma20"), price_position.get("ma10"))
+        resistance = _first_price(price_position.get("resistance_level"))
+
+        decision_type = (result.decision_type or "").lower()
+        if decision_type == "buy":
+            fallback_points = {
+                "ideal_buy": f"理想买入点：{ma5 or support or '等待MA5支撑确认'}附近，回踩不破再分批介入",
+                "secondary_buy": f"次优买入点：{ma10 or support or '等待MA10支撑确认'}附近，适合更保守低吸",
+                "stop_loss": f"止损位：{support or ma20 or '跌破最近有效支撑'}，破位需控制仓位",
+                "take_profit": f"目标位：{resistance or '前高/压力区'}附近分批止盈",
+            }
+        elif decision_type == "hold":
+            fallback_points = {
+                "ideal_buy": f"理想买入点：{ma10 or support or '回踩关键均线企稳'}后再考虑加仓",
+                "secondary_buy": f"次优买入点：{ma20 or support or '确认支撑有效'}附近小仓试探",
+                "stop_loss": f"止损位：{support or ma20 or '跌破关键支撑'}，破位降低仓位",
+                "take_profit": f"目标位：{resistance or '上方压力区'}附近观察量能并分批止盈",
+            }
+        else:
+            fallback_points = {
+                "ideal_buy": f"理想买入点：暂不建议买入，至少等重新站上 {ma5 or 'MA5'} 后再观察",
+                "secondary_buy": f"次优买入点：等待回踩 {support or ma20 or '关键支撑'} 企稳并放量确认",
+                "stop_loss": f"止损位：若已持仓，跌破或无法收复 {support or current or '关键支撑'} 应继续控风险",
+                "take_profit": f"目标位：反弹至 {resistance or ma5 or '上方压力位'} 附近优先减仓",
+            }
+
+        filled = False
+        for key, fallback in fallback_points.items():
+            if _is_value_placeholder(sniper.get(key)):
+                sniper[key] = fallback
+                filled = True
+        if filled:
+            logger.info("[battle_plan] Filled missing sniper points from computed price data")
+    except Exception as e:
+        logger.warning("[battle_plan] Actionable fallback fill failed, skipping: %s", e)
 
 
 def get_stock_name_multi_source(

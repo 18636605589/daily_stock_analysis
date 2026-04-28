@@ -25,7 +25,13 @@ from src.config import get_config, Config
 from src.storage import get_db
 from data_provider import DataFetcherManager
 from data_provider.realtime_types import ChipDistribution
-from src.analyzer import GeminiAnalyzer, AnalysisResult, fill_chip_structure_if_needed, fill_price_position_if_needed
+from src.analyzer import (
+    GeminiAnalyzer,
+    AnalysisResult,
+    fill_actionable_fallbacks_if_needed,
+    fill_chip_structure_if_needed,
+    fill_price_position_if_needed,
+)
 from src.data.stock_mapping import STOCK_NAME_MAP
 from src.notification import NotificationService, NotificationChannel
 from src.report_language import (
@@ -400,6 +406,7 @@ class StockAnalysisPipeline:
             # Step 7.7: price_position fallback
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                fill_actionable_fallbacks_if_needed(result)
 
             # Step 8: 保存分析历史记录
             if result:
@@ -674,6 +681,7 @@ class StockAnalysisPipeline:
             # price_position fallback (same as non-agent path Step 7.7)
             if result:
                 fill_price_position_if_needed(result, trend_result, realtime_quote)
+                fill_actionable_fallbacks_if_needed(result)
 
             resolved_stock_name = result.name if result and result.name else stock_name
 

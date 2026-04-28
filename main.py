@@ -48,6 +48,7 @@ from src.core.pipeline import StockAnalysisPipeline
 from src.core.market_review import run_market_review
 from src.webui_frontend import prepare_webui_frontend_assets
 from src.config import get_config, Config
+from src.llm_lifecycle import close_litellm_clients
 from src.logging_config import setup_logging
 
 
@@ -440,6 +441,10 @@ def run_full_analysis(
 
     except Exception as e:
         logger.exception(f"分析流程执行失败: {e}")
+    finally:
+        # LiteLLM keeps reusable httpx clients in a global cache. Close them
+        # before the interpreter starts tearing logging handlers down.
+        close_litellm_clients()
 
 
 def start_api_server(host: str, port: int, config: Config) -> None:
@@ -716,6 +721,8 @@ def main() -> int:
     except Exception as e:
         logger.exception(f"程序执行失败: {e}")
         return 1
+    finally:
+        close_litellm_clients()
 
 
 if __name__ == "__main__":

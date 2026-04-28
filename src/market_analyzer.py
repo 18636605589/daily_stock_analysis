@@ -11,6 +11,7 @@
 """
 
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -295,15 +296,70 @@ class MarketAnalyzer:
         
         logger.info("[大盘] 调用大模型生成复盘报告...")
         # Use the public generate_text() entry point — never access private analyzer attributes.
-        review = self.analyzer.generate_text(prompt, max_tokens=2048, temperature=0.7)
+        review = self.analyzer.generate_text(prompt, max_tokens=4096, temperature=0.7)
 
-        if review:
-            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review))
+        if not self._is_review_complete(review):
+            logger.warning(
+                "[大盘] 大模型复盘内容不完整，长度: %d，尝试补全重试",
+                len(review or ""),
+            )
+            retry_prompt = self._build_review_retry_prompt(prompt, review)
+            review = self.analyzer.generate_text(retry_prompt, max_tokens=4096, temperature=0.3)
+
+        if self._is_review_complete(review):
+            logger.info("[大盘] 复盘报告生成成功，长度: %d 字符", len(review or ""))
             # Inject structured data tables into LLM prose sections
-            return self._inject_data_into_review(review, overview)
-        else:
-            logger.warning("[大盘] 大模型返回为空，使用模板报告")
-            return self._generate_template_review(overview, news)
+            return self._inject_data_into_review(review or "", overview)
+
+        logger.warning("[大盘] 大模型复盘仍不完整，使用模板报告")
+        return self._generate_template_review(overview, news)
+
+    def _is_review_complete(self, review: Optional[str]) -> bool:
+        """Check whether an LLM market review is long enough and section-complete."""
+        text = (review or "").strip()
+        if len(text) < 300:
+            return False
+
+        required_patterns = (
+            r"###\s*(一|1)[、.．]?\s*市场",
+            r"###\s*(二|2)[、.．]?\s*指数",
+            r"###\s*(五|5)[、.．]?\s*后市|###\s*(5|五)[、.．]?\s*Outlook",
+            r"###\s*(六|6)[、.．]?\s*风险|###\s*(6|六)[、.．]?\s*Risk",
+            r"###\s*(七|7)[、.．]?\s*策略|###\s*(7|七)[、.．]?\s*Strategy",
+        )
+        return all(re.search(pattern, text, flags=re.IGNORECASE) for pattern in required_patterns)
+
+    def _build_review_retry_prompt(self, base_prompt: str, previous_review: Optional[str]) -> str:
+        """Build a stricter retry prompt when the first market review is incomplete."""
+        previous = (previous_review or "").strip() or "（上一次没有返回有效内容）"
+        if self.region == "us":
+            return f"""{base_prompt}
+
+---
+
+The previous answer was incomplete:
+{previous}
+
+Please regenerate the FULL Markdown report. Requirements:
+- Include sections 1 through 7 exactly as requested.
+- Do not stop after the market summary.
+- Output at least 300 words.
+- Output only the report body, with no extra commentary.
+"""
+
+        return f"""{base_prompt}
+
+---
+
+上一次回答不完整：
+{previous}
+
+请重新生成完整 Markdown 大盘复盘。要求：
+- 必须包含“一、市场总结”到“七、策略计划”全部章节。
+- 不要只输出开头几句，不要中途停止。
+- 正文不少于 600 字。
+- 只输出报告正文，不要输出额外解释。
+"""
     
     def _inject_data_into_review(self, review: str, overview: MarketOverview) -> str:
         """Inject structured data tables into the corresponding LLM prose sections."""
