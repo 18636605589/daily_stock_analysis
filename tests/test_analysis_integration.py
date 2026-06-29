@@ -48,7 +48,7 @@ class TestAnalysisIntegration:
         """Test flow: User enters stock name -> resolved to code -> task submitted."""
         # Setup mock behavior
         mock_task_queue.submit_tasks_batch.return_value = (
-            [MagicMock(task_id="test_task_123", stock_code="600519")],
+            [MagicMock(task_id="test_task_123", stock_code="600519", analysis_phase="auto")],
             []
         )
 
@@ -68,15 +68,19 @@ class TestAnalysisIntegration:
         assert data["task_id"] == "test_task_123"
         assert data["status"] == "pending"
 
-        # Verify task queue received the correct resolved code and metadata
-        mock_task_queue.submit_tasks_batch.assert_called_once_with(
-            stock_codes=["600519"],
-            stock_name=None,
-            original_query="贵州茅台",
-            selection_source="manual",
-            report_type="detailed",
-            force_refresh=False
-        )
+        # Verify task queue received the correct resolved code and metadata.
+        # Use call_args so this integration test stays focused on analysis flow
+        # semantics even if the queue API gains orthogonal optional flags.
+        mock_task_queue.submit_tasks_batch.assert_called_once()
+        _, kwargs = mock_task_queue.submit_tasks_batch.call_args
+        assert kwargs["stock_codes"] == ["600519"]
+        assert kwargs["stock_name"] is None
+        assert kwargs["original_query"] == "贵州茅台"
+        assert kwargs["selection_source"] == "manual"
+        assert kwargs["report_type"] == "detailed"
+        assert kwargs["analysis_phase"] == "auto"
+        assert kwargs["force_refresh"] is False
+        assert kwargs["notify"] is True
 
     def test_trigger_analysis_batch_deduplication(self, client, mock_task_queue):
         """Test de-duplication across different formats (600519 and 600519.SH)."""
@@ -95,6 +99,7 @@ class TestAnalysisIntegration:
         args, kwargs = mock_task_queue.submit_tasks_batch.call_args
         assert len(kwargs["stock_codes"]) == 1
         assert kwargs["stock_codes"] == ["600519"]
+        assert kwargs["analysis_phase"] == "auto"
 
     def test_trigger_analysis_dos_protection(self, client):
         """Test that excessive stock codes are rejected."""
@@ -130,3 +135,26 @@ class TestAnalysisIntegration:
         assert kwargs["stock_name"] is None
         assert kwargs["original_query"] is None
         assert kwargs["selection_source"] is None
+        assert kwargs["analysis_phase"] == "auto"
+
+    def test_trigger_analysis_explicit_analysis_phase(self, client, mock_task_queue):
+        """Explicit analysis_phase is passed through to the task queue."""
+        mock_task_queue.submit_tasks_batch.return_value = (
+            [MagicMock(task_id="test_task_phase", stock_code="600519", analysis_phase="intraday")],
+            []
+        )
+
+        response = client.post(
+            "/api/v1/analysis/analyze",
+            json={
+                "stock_code": "600519",
+                "async_mode": True,
+                "analysis_phase": "intraday",
+            },
+        )
+
+        assert response.status_code == 202
+        assert response.json()["analysis_phase"] == "intraday"
+        mock_task_queue.submit_tasks_batch.assert_called_once()
+        _, kwargs = mock_task_queue.submit_tasks_batch.call_args
+        assert kwargs["analysis_phase"] == "intraday"
