@@ -12,6 +12,7 @@ API v1 路由聚合
 from fastapi import APIRouter
 
 from api.v1.endpoints import (
+    a_stock,
     agent,
     alerts,
     alphasift,
@@ -108,6 +109,12 @@ router.include_router(
     intelligence.router,
     prefix="/intelligence",
     tags=["Intelligence"]
+)
+
+router.include_router(
+    a_stock.router,
+    prefix="/a-stock",
+    tags=["AStock"]
 )
 
 router.include_router(
