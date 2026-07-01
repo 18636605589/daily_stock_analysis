@@ -136,7 +136,23 @@ kill_process_tree() {
     for child in $children; do
       kill_process_tree "$child"
     done
+    # 终止进程本身
     kill "$pid" 2>/dev/null || true
+    # 同时终止整个进程组（应对 setsid 场景）
+    kill -TERM -"$pid" 2>/dev/null || true
+  fi
+}
+
+# 强制杀掉还残留的进程
+force_kill_port() {
+  local port="$1"
+  local pids
+  pids=$(find_port_pids "$port")
+  if [ -n "$pids" ]; then
+    for pid in $pids; do
+      kill -9 "$pid" 2>/dev/null || true
+      kill -9 -"$pid" 2>/dev/null || true
+    done
   fi
 }
 
@@ -201,6 +217,11 @@ stop_services() {
     waited=$((waited + 1))
   done
 
+  # 强制兜底：如果还有残留进程，直接 kill -9
+  force_kill_port "$FRONTEND_PORT"
+  force_kill_port "$BACKEND_PORT"
+  sleep 0.3
+
   if [ $stopped_any -eq 1 ]; then
     success "旧服务已停止"
   else
@@ -234,12 +255,16 @@ start_backend() {
   info "  Python: $PYTHON_BIN"
 
   cd "$BACKEND_DIR"
-  PATH="$PYTHON_DIR:$PATH" nohup "$PYTHON_BIN" -m uvicorn server:app \
-    --reload \
-    --host 0.0.0.0 \
-    --port "$BACKEND_PORT" \
-    > "$BACKEND_LOG" 2>&1 &
+  (
+    PATH="$PYTHON_DIR:$PATH"
+    exec "$PYTHON_BIN" -m uvicorn server:app \
+      --reload \
+      --host 0.0.0.0 \
+      --port "$BACKEND_PORT" \
+      < /dev/null >> "$BACKEND_LOG" 2>&1
+  ) &
   local backend_pid=$!
+  disown $backend_pid 2>/dev/null || true
 
   echo "backend:$backend_pid" >> "$PID_FILE"
 
@@ -257,10 +282,13 @@ start_frontend() {
   info "启动前端服务 (端口: $FRONTEND_PORT)..."
 
   cd "$FRONTEND_DIR"
-  BACKEND_PORT="$BACKEND_PORT" FRONTEND_PORT="$FRONTEND_PORT" \
-    nohup npm run dev \
-    > "$FRONTEND_LOG" 2>&1 &
+  (
+    export BACKEND_PORT FRONTEND_PORT
+    exec npm run dev \
+      < /dev/null >> "$FRONTEND_LOG" 2>&1
+  ) &
   local frontend_pid=$!
+  disown $frontend_pid 2>/dev/null || true
 
   echo "frontend:$frontend_pid" >> "$PID_FILE"
 
@@ -317,8 +345,10 @@ main() {
       stop_services
       echo ""
 
-      # 清空 PID 文件
+      # 清空 PID 文件和日志
       > "$PID_FILE"
+      : > "$FRONTEND_LOG"
+      : > "$BACKEND_LOG"
 
       start_backend
       echo ""
