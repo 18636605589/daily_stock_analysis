@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '../common/Card';
 import { Badge } from '../common/Badge';
@@ -8,6 +8,23 @@ import { EmptyState } from '../common/EmptyState';
 import { Loading } from '../common/Loading';
 import type { NextRecommendationsResponse, FactorStockItem } from '../../types/aStock';
 import { cleanStockCode, formatPct, getOperationVariant } from './utils';
+
+type RatingFilterKey = 'all' | 'buy' | 'watch' | 'avoid';
+
+function categorizeRating(rating: string): RatingFilterKey {
+  const r = rating || '';
+  if (/谨慎|偏弱|回避|不建议|波动偏大/.test(r)) return 'avoid';
+  if (/买入|积极|可介入|企稳可关注|趋势延续/.test(r)) return 'buy';
+  if (/观察|关注|等待|待确认|待评估/.test(r)) return 'watch';
+  return 'watch';
+}
+
+const RATING_FILTER_OPTIONS: { key: RatingFilterKey; label: string; emoji: string }[] = [
+  { key: 'all', label: '全部', emoji: '📋' },
+  { key: 'buy', label: '可介入', emoji: '🟢' },
+  { key: 'watch', label: '待观察', emoji: '🟡' },
+  { key: 'avoid', label: '回避', emoji: '🔴' },
+];
 
 interface NextRecommendationsProps {
   data: NextRecommendationsResponse | null;
@@ -116,6 +133,23 @@ function StockCard({ stock, onNavigate }: { stock: FactorStockItem; onNavigate: 
 
 export const NextRecommendations: React.FC<NextRecommendationsProps> = ({ data, loading, error }) => {
   const navigate = useNavigate();
+  const [filter, setFilter] = useState<RatingFilterKey>('all');
+
+  const factorData = useMemo(() => data?.factorData || [], [data]);
+
+  const filteredStocks = useMemo(() => {
+    if (filter === 'all') return factorData;
+    return factorData.filter((s) => categorizeRating(s.operationRating) === filter);
+  }, [factorData, filter]);
+
+  const ratingCounts = useMemo(() => {
+    const counts: Record<RatingFilterKey, number> = { all: factorData.length, buy: 0, watch: 0, avoid: 0 };
+    for (const s of factorData) {
+      const cat = categorizeRating(s.operationRating);
+      counts[cat]++;
+    }
+    return counts;
+  }, [factorData]);
 
   const handleNavigateToChat = (code: string, name: string) => {
     navigate(`/chat?stock=${encodeURIComponent(code)}&name=${encodeURIComponent(name)}`);
@@ -123,7 +157,7 @@ export const NextRecommendations: React.FC<NextRecommendationsProps> = ({ data, 
 
   if (loading) return <Loading />;
   if (error) return <EmptyState title="数据加载失败" description={error} />;
-  if (!data || !data.factorData.length) return <EmptyState title="暂无荐股数据" description="等待 a_stock 生成次日荐股数据" />;
+  if (!data || !factorData.length) return <EmptyState title="暂无荐股数据" description="等待 a_stock 生成次日荐股数据" />;
 
   const indices = data.market?.indices || {};
   const indexNames: Record<string, string> = {
@@ -164,11 +198,40 @@ export const NextRecommendations: React.FC<NextRecommendationsProps> = ({ data, 
           </div>
         </Card>
 
-        <Card title={`候选股票 (${data.factorData.length}只)`} subtitle="STOCK PICKS" className="lg:col-span-2">
+        <Card
+          title={`候选股票 (${filter === 'all' ? factorData.length : `${filteredStocks.length}/${factorData.length}`}只)`}
+          subtitle="STOCK PICKS"
+          className="lg:col-span-2"
+        >
+          <div className="flex flex-wrap gap-2 mb-3">
+            {RATING_FILTER_OPTIONS.map((opt) => {
+              const count = ratingCounts[opt.key];
+              const active = filter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  onClick={() => setFilter(opt.key)}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium transition-all ${
+                    active
+                      ? 'bg-cyan/20 text-cyan border border-cyan/40 shadow-sm'
+                      : 'bg-card/60 text-secondary-text border border-border/50 hover:bg-elevated hover:text-foreground'
+                  }`}
+                >
+                  <span>{opt.emoji}</span>
+                  <span>{opt.label}</span>
+                  <span className={`text-xs px-1.5 py-0.5 rounded-full ${active ? 'bg-cyan/20' : 'bg-elevated/60'}`}>{count}</span>
+                </button>
+              );
+            })}
+          </div>
           <div className="grid grid-cols-1 md:grid-cols-2 gap-3 max-h-[600px] overflow-y-auto pr-1">
-            {data.factorData.map((stock) => (
-              <StockCard key={stock.symbol} stock={stock} onNavigate={handleNavigateToChat} />
-            ))}
+            {filteredStocks.length === 0 ? (
+              <div className="col-span-2 text-center py-10 text-secondary-text text-sm">该筛选条件下暂无股票</div>
+            ) : (
+              filteredStocks.map((stock) => (
+                <StockCard key={stock.symbol} stock={stock} onNavigate={handleNavigateToChat} />
+              ))
+            )}
           </div>
           <div className="mt-4 rounded-lg border border-dashed border-border/60 bg-card/30 p-3 text-xs text-secondary-text">
             💡 以上仅为量化模型初步筛选结果，不构成投资建议。请结合次日盘前复盘、大盘环境、自身风险承受能力综合决策，投资有风险，入市需谨慎。

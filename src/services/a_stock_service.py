@@ -78,6 +78,19 @@ def _clean_nan(obj: Any) -> Any:
     return obj
 
 
+_BUY_ACTIONS = {"建仓试仓", "开盘计划/小仓试探", "回踩低吸", "趋势跟踪"}
+_AVOID_ACTIONS = {"不追高", "放弃/剔除"}
+
+
+def _categorize_action(action: str) -> str:
+    """将 a_stock 引擎原始 action 归一化为 buy/watch/avoid 三类，便于前端统计与着色。"""
+    if action in _BUY_ACTIONS:
+        return "buy"
+    if action in _AVOID_ACTIONS:
+        return "avoid"
+    return "watch"
+
+
 def _load_json(path: Path) -> Optional[Dict[str, Any]]:
     """加载 JSON 文件，处理 NaN，失败返回 None。"""
     try:
@@ -333,6 +346,7 @@ class AStockService:
             return None
         results = []
         for item in data.get("results", []) or []:
+            action_raw = item.get("action", "")
             results.append({
                 "symbol": item.get("symbol", ""),
                 "code": item.get("code", ""),
@@ -344,7 +358,8 @@ class AStockService:
                 "short_term_score": _safe_float(item.get("short_term_score")),
                 "deep_tech_rating": item.get("deep_tech_rating", ""),
                 "deep_tech_signal": item.get("deep_tech_signal", ""),
-                "action": item.get("action", ""),
+                "action": action_raw,
+                "action_category": _categorize_action(action_raw),
                 "position": str(item.get("position", "") or ""),
                 "reason": item.get("reason", ""),
                 "risk_flags": item.get("risk_flags", ""),

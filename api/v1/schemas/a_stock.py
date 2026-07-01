@@ -53,6 +53,7 @@ class PremarketStockItem(BaseModel):
     deep_tech_rating: str = ""
     deep_tech_signal: str = ""
     action: str = ""
+    action_category: str = "watch"
     position: str = ""
     reason: str = ""
     risk_flags: str = ""

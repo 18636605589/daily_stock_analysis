@@ -43,6 +43,7 @@ export interface PremarketStockItem {
   deepTechRating: string;
   deepTechSignal: string;
   action: string;
+  actionCategory?: 'buy' | 'watch' | 'avoid';
   position: string;
   reason: string;
   riskFlags: string;
