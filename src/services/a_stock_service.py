@@ -26,6 +26,37 @@ DEFAULT_A_STOCK_ROOT = Path("/Users/zilong/Documents/hermes/a_stock")
 
 _FILENAME_DATE_RE = re.compile(r"(\d{8})_(\d{4})")
 
+_PREMARKET_PHASE_KEYWORDS: List[Tuple[str, str]] = [
+    ("preopen", "集合竞价"),
+    ("open-confirm", "开盘确认"),
+    ("open_confirm", "开盘确认"),
+    ("intraday", "盘中复核"),
+    ("midday", "盘中复核"),
+    ("postclose", "盘后"),
+    ("post_close", "盘后"),
+    ("post-market", "盘后"),
+    ("post_market", "盘后"),
+    ("close", "盘后"),
+]
+
+
+def _get_phase_from_filename(filename: str) -> str:
+    """从文件名中提取阶段标签（preopen→集合竞价, open-confirm→开盘确认等），未识别返回空字符串。"""
+    name_lower = filename.lower()
+    for keyword, label in _PREMARKET_PHASE_KEYWORDS:
+        if keyword in name_lower:
+            return label
+    return ""
+
+
+def _get_phase_key_from_filename(filename: str) -> str:
+    """从文件名中提取阶段key（preopen/open-confirm等），未识别返回空字符串。"""
+    name_lower = filename.lower()
+    for keyword, _ in _PREMARKET_PHASE_KEYWORDS:
+        if keyword in name_lower:
+            return keyword
+    return ""
+
 
 def _get_a_stock_root() -> Path:
     root = os.environ.get("A_STOCK_ROOT", "").strip()
@@ -155,6 +186,58 @@ def _scan_dated_files(base_dir: Path, prefix: str, suffix: str = ".json") -> Lis
     return sorted(daily_latest.values(), key=lambda x: x["timestamp"], reverse=True)
 
 
+def _get_time_phase_label(time_str: str) -> str:
+    """根据HHMM时间返回阶段标签。"""
+    if len(time_str) != 4 or not time_str.isdigit():
+        return ""
+    hhmm = int(time_str)
+    if hhmm <= 930:
+        return "集合竞价"
+    if hhmm <= 940:
+        return "开盘确认"
+    if hhmm < 1130 or (1300 <= hhmm <= 1500):
+        return "盘中复核"
+    return "盘后"
+
+
+def _scan_all_premarket_files(base_dir: Path, prefix: str, suffix: str = ".json") -> List[Dict[str, str]]:
+    """扫描盘前复盘所有时间点文件（同一日期的多次复核全部返回，不去重）。"""
+    if not base_dir.is_dir():
+        return []
+
+    items: List[Dict[str, str]] = []
+    for month_dir in sorted(base_dir.iterdir()):
+        if not month_dir.is_dir() or not re.match(r"^\d{6}$", month_dir.name):
+            continue
+        for f in month_dir.iterdir():
+            if not f.is_file() or not f.name.startswith(prefix) or not f.name.endswith(suffix):
+                continue
+            m = _FILENAME_DATE_RE.search(f.name)
+            if not m:
+                continue
+            date_str = m.group(1)
+            time_str = m.group(2)
+            phase_key = _get_phase_key_from_filename(f.name)
+            base_ts = f"{date_str}_{time_str}"
+            ts = f"{base_ts}_{phase_key}" if phase_key else base_ts
+            dt = datetime.strptime(base_ts, "%Y%m%d_%H%M")
+            phase = _get_phase_from_filename(f.name) or _get_time_phase_label(time_str)
+            if phase:
+                label = f"{dt.strftime('%Y-%m-%d %H:%M')} · {phase}"
+            else:
+                label = dt.strftime("%Y-%m-%d %H:%M")
+            items.append({
+                "date": date_str,
+                "time": time_str,
+                "timestamp": ts,
+                "path": str(f),
+                "label": label,
+                "phase": phase,
+            })
+
+    return sorted(items, key=lambda x: x["timestamp"], reverse=True)
+
+
 def _format_date_label(date_str: str) -> str:
     """YYYYMMDD → YYYY-MM-DD"""
     if len(date_str) == 8:
@@ -227,16 +310,20 @@ class AStockService:
         }
 
     def get_premarket_dates(self) -> List[Dict[str, str]]:
-        """返回盘前复盘历史日期列表（倒序）。"""
-        return _scan_dated_files(self.data_premarket_dir, "a_stock_premarket_validate_")
+        """返回盘前复盘历史时间点列表（倒序，同一天的多次复核全部返回）。"""
+        return _scan_all_premarket_files(self.data_premarket_dir, "a_stock_premarket_validate_")
 
-    def get_premarket_review(self, date_str: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """读取指定日期（YYYYMMDD）的盘前复盘；date_str 为 None 时取最新。"""
+    def get_premarket_review(self, date_or_ts: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """读取盘前复盘；date_or_ts 为 None 取最新；支持 YYYYMMDD（取当天最新）或 YYYYMMDD_HHMM（精确时间点）。"""
         files = self.get_premarket_dates()
         if not files:
             return None
-        if date_str:
-            target = next((f for f in files if f["date"] == date_str), None)
+        if date_or_ts:
+            if "_" in date_or_ts:
+                target = next((f for f in files if f["timestamp"] == date_or_ts), None)
+            else:
+                same_day = [f for f in files if f["date"] == date_or_ts]
+                target = same_day[0] if same_day else None
             if target is None:
                 return None
         else:
@@ -276,18 +363,22 @@ class AStockService:
                 "risk_reward": _safe_float(item.get("risk_reward")),
             })
         date_str_out = target["date"]
+        time_str_out = target.get("time", "")
+        phase_out = target.get("phase", "") or data.get("phase_label", "")
         return {
             "validate_time": data.get("validate_time", ""),
             "source_data": data.get("source_data", ""),
             "source_report_time": data.get("source_report_time", ""),
             "phase": data.get("phase", ""),
-            "phase_label": data.get("phase_label", ""),
+            "phase_label": phase_out or data.get("phase_label", ""),
             "confidence": data.get("confidence", ""),
             "market_bias": data.get("market_bias", ""),
             "market_reason": data.get("market_reason", ""),
             "elapsed_seconds": _safe_float(data.get("elapsed_seconds")) or 0.0,
             "results": results,
             "date": date_str_out,
+            "time": time_str_out,
+            "timestamp": target["timestamp"],
         }
 
     def get_latest_premarket(self) -> Optional[Dict[str, Any]]:

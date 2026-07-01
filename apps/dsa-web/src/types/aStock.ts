@@ -73,12 +73,16 @@ export interface PremarketReviewResponse {
   elapsedSeconds: number;
   results: PremarketStockItem[];
   date: string;
+  time: string;
+  timestamp: string;
 }
 
 export interface DatedFileItem {
   date: string;
   label: string;
   timestamp: string;
+  time: string;
+  phase: string;
 }
 
 export interface DailySnapshotStockItem {

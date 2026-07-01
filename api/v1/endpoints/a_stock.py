@@ -115,16 +115,32 @@ def get_latest_premarket() -> PremarketReviewResponse:
     "/premarket/{date}",
     response_model=PremarketReviewResponse,
     responses={**AUTH_RESPONSE, 404: {"model": ErrorResponse}},
-    summary="指定日期盘前复盘（date=YYYYMMDD）",
+    summary="指定日期/时间点盘前复盘（date=YYYYMMDD / YYYYMMDD_HHMM / YYYYMMDD_HHMM_phase）",
 )
 def get_premarket(date: str) -> PremarketReviewResponse:
     svc = _get_service()
     _require_data(svc)
-    if len(date) != 8 or not date.isdigit():
-        raise HTTPException(status_code=400, detail={"error": "invalid_date", "message": "日期格式应为 YYYYMMDD"})
+    is_ts = "_" in date
+    if is_ts:
+        parts = date.split("_")
+        if len(parts) == 2:
+            valid = len(parts[0]) == 8 and parts[0].isdigit() and len(parts[1]) == 4 and parts[1].isdigit()
+            if not valid:
+                raise HTTPException(status_code=400, detail={"error": "invalid_date", "message": "时间戳格式应为 YYYYMMDD_HHMM"})
+        elif len(parts) == 3:
+            valid = (len(parts[0]) == 8 and parts[0].isdigit()
+                     and len(parts[1]) == 4 and parts[1].isdigit()
+                     and len(parts[2]) >= 2 and parts[2].replace("-", "").replace("_", "").isalnum())
+            if not valid:
+                raise HTTPException(status_code=400, detail={"error": "invalid_date", "message": "扩展时间戳格式应为 YYYYMMDD_HHMM_phase"})
+        else:
+            raise HTTPException(status_code=400, detail={"error": "invalid_date", "message": "时间戳格式应为 YYYYMMDD、YYYYMMDD_HHMM 或 YYYYMMDD_HHMM_phase"})
+    else:
+        if len(date) != 8 or not date.isdigit():
+            raise HTTPException(status_code=400, detail={"error": "invalid_date", "message": "日期格式应为 YYYYMMDD、YYYYMMDD_HHMM 或 YYYYMMDD_HHMM_phase"})
     data = svc.get_premarket_review(date)
     if data is None:
-        raise HTTPException(status_code=404, detail={"error": "not_found", "message": f"日期 {date} 无盘前复盘数据"})
+        raise HTTPException(status_code=404, detail={"error": "not_found", "message": f"时间点 {date} 无盘前复盘数据"})
     return PremarketReviewResponse(**data)
 
 

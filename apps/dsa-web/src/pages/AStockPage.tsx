@@ -58,7 +58,7 @@ export const AStockPage: React.FC = () => {
       setNextData(next);
       setPremarketDates(pmDates);
       setPremarketData(pmLatest);
-      if (pmLatest) setSelectedPremarketDate(pmLatest.date);
+      if (pmLatest) setSelectedPremarketDate(pmLatest.timestamp || pmLatest.date);
       setDailyDates(dDates);
       if (dDates.length > 0) {
         setSelectedDailyDate(dDates[0].date);

@@ -83,12 +83,16 @@ class PremarketReviewResponse(BaseModel):
     elapsed_seconds: float = 0.0
     results: List[PremarketStockItem] = Field(default_factory=list)
     date: str = ""
+    time: str = ""
+    timestamp: str = ""
 
 
 class DatedFileItem(BaseModel):
     date: str
     label: str
     timestamp: str = ""
+    time: str = ""
+    phase: str = ""
 
 
 class DailySnapshotStockItem(BaseModel):

@@ -190,19 +190,24 @@ export const PremarketReview: React.FC<PremarketReviewProps> = ({
             {dates.length === 0 ? (
               <div className="text-sm text-secondary-text text-center py-4">暂无历史记录</div>
             ) : (
-              dates.map((d) => (
-                <button
-                  key={d.date}
-                  onClick={() => onSelectDate(d.date)}
-                  className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
-                    d.date === selectedDate
-                      ? 'bg-cyan/15 text-cyan border border-cyan/30'
-                      : 'text-secondary-text hover:bg-elevated/60 hover:text-foreground'
-                  }`}
-                >
-                  {d.label}
-                </button>
-              ))
+              dates.map((d) => {
+                const isSelected = (d.timestamp || d.date) === selectedDate;
+                return (
+                  <button
+                    key={d.timestamp || d.date}
+                    onClick={() => onSelectDate(d.timestamp || d.date)}
+                    className={`w-full text-left px-3 py-2 rounded-lg text-sm transition-colors ${
+                      isSelected
+                        ? 'bg-cyan/15 text-cyan border border-cyan/30'
+                        : 'text-secondary-text hover:bg-elevated/60 hover:text-foreground'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <span>{d.label}</span>
+                    </div>
+                  </button>
+                );
+              })
             )}
           </div>
         </Card>

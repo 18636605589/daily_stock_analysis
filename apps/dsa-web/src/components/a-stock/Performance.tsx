@@ -2,6 +2,7 @@ import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Card } from '../common/Card';
 import { Badge } from '../common/Badge';
+import { Tooltip } from '../common/Tooltip';
 import { StatCard } from '../common/StatCard';
 import { EmptyState } from '../common/EmptyState';
 import { Loading } from '../common/Loading';
@@ -15,6 +16,20 @@ interface PerformanceProps {
 }
 
 type FilterKey = 'all' | '买入' | '观察' | '谨慎' | '回避' | '持仓';
+
+function ThHelp({ label, tip, align = 'right' }: { label: string; tip: string; align?: 'left' | 'center' | 'right' }) {
+  const alignCls = align === 'left' ? 'text-left' : align === 'center' ? 'text-center' : 'text-right';
+  return (
+    <th className={`${alignCls} py-2 px-2 font-medium`}>
+      <Tooltip content={tip} side="bottom">
+        <span className="cursor-help border-b border-dotted border-border/60 hover:text-cyan transition-colors inline-flex items-center gap-1">
+          {label}
+          <span className="text-[9px] opacity-40">ⓘ</span>
+        </span>
+      </Tooltip>
+    </th>
+  );
+}
 
 function matchRating(rating: string, filter: FilterKey): boolean {
   if (filter === 'all') return true;
@@ -58,27 +73,47 @@ export const Performance: React.FC<PerformanceProps> = ({ data, loading, error }
 
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border border-cyan/20 bg-cyan/5 p-4">
+        <div className="flex items-start gap-3">
+          <span className="text-2xl">💡</span>
+          <div className="text-sm text-foreground/90 leading-relaxed">
+            <p className="font-semibold text-cyan mb-1">绩效追踪说明：</p>
+            <ul className="space-y-1 text-secondary-text">
+              <li>• 这里记录了所有历史荐股在<strong className="text-foreground">推荐后1天(T+1)、5天(T+5)、20天(T+20)</strong>的实际涨跌幅表现；</li>
+              <li>• <strong className="text-foreground">胜率</strong>：盈利次数占总推荐次数的比例，超过50%说明模型整体能赚钱；</li>
+              <li>• <strong className="text-foreground">超额收益</strong>：相对沪深300指数的收益，为正说明跑赢大盘；</li>
+              <li>• <span className="text-danger font-medium">红色=盈利</span>，<span className="text-success font-medium">绿色=亏损</span>（遵循A股红涨绿跌习惯）；</li>
+              <li>• 可以通过上方按钮筛选不同评级的历史表现，验证哪类建议最靠谱。</li>
+            </ul>
+          </div>
+        </div>
+      </div>
+
       <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <StatCard label="总推荐次数" value={stats.totalCount} tone="primary" />
+        <StatCard label="总推荐次数" value={stats.totalCount} tone="primary" hint="累计推荐股票次数" />
         <StatCard
           label="平均 T+1 收益"
           value={formatPct(stats.avgRetT1)}
           tone={stats.avgRetT1 !== null && stats.avgRetT1 !== undefined ? (stats.avgRetT1 > 0 ? 'success' : 'danger') : 'default'}
+          hint="推荐后次日收盘平均收益"
         />
         <StatCard
           label="平均 T+5 收益"
           value={formatPct(stats.avgRetT5)}
           tone={stats.avgRetT5 !== null && stats.avgRetT5 !== undefined ? (stats.avgRetT5 > 0 ? 'success' : 'danger') : 'default'}
+          hint="推荐后5个交易日平均收益"
         />
         <StatCard
           label="T+1 胜率"
           value={stats.winRateT1 !== null && stats.winRateT1 !== undefined ? `${stats.winRateT1.toFixed(1)}%` : '--'}
           tone={stats.winRateT1 !== null && stats.winRateT1 !== undefined && stats.winRateT1 > 50 ? 'success' : 'warning'}
+          hint="次日收盘盈利的比例"
         />
         <StatCard
           label="T+5 胜率"
           value={stats.winRateT5 !== null && stats.winRateT5 !== undefined ? `${stats.winRateT5.toFixed(1)}%` : '--'}
           tone={stats.winRateT5 !== null && stats.winRateT5 !== undefined && stats.winRateT5 > 50 ? 'success' : 'warning'}
+          hint="5日后盈利的比例"
         />
       </div>
 
@@ -108,16 +143,16 @@ export const Performance: React.FC<PerformanceProps> = ({ data, loading, error }
           <table className="w-full text-sm">
             <thead className="sticky top-0 bg-card/95 backdrop-blur-sm">
               <tr className="border-b border-border/50 text-xs text-secondary-text">
-                <th className="text-left py-2 px-2 font-medium">日期</th>
+                <ThHelp label="日期" tip="荐股报告发布日期" align="left" />
                 <th className="text-left py-2 px-2 font-medium">股票</th>
                 <th className="text-center py-2 px-2 font-medium">评级</th>
-                <th className="text-right py-2 px-2 font-medium">推荐价</th>
-                <th className="text-right py-2 px-2 font-medium">T+1</th>
-                <th className="text-right py-2 px-2 font-medium">T+1超额</th>
-                <th className="text-right py-2 px-2 font-medium">T+5</th>
-                <th className="text-right py-2 px-2 font-medium">T+5超额</th>
-                <th className="text-right py-2 px-2 font-medium">T+20</th>
-                <th className="text-right py-2 px-2 font-medium">T+20超额</th>
+                <ThHelp label="推荐价" tip="报告发布当日收盘价，作为收益计算基准" />
+                <ThHelp label="T+1" tip="推荐后次日收盘相对推荐价的涨跌幅" />
+                <ThHelp label="T+1超额" tip="T+1收益减去同期沪深300涨跌幅，正值=跑赢大盘" />
+                <ThHelp label="T+5" tip="推荐后5个交易日收盘的累计涨跌幅" />
+                <ThHelp label="T+5超额" tip="T+5收益减去同期沪深300涨跌幅" />
+                <ThHelp label="T+20" tip="推荐后20个交易日（约1个月）的累计涨跌幅" />
+                <ThHelp label="T+20超额" tip="T+20收益减去同期沪深300涨跌幅" />
               </tr>
             </thead>
             <tbody>
