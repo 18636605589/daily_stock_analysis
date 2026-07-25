@@ -22,6 +22,7 @@ const FACTOR_CN_NAMES: Record<string, string> = {
   mom_3m: '3月动量',
   vol_1m: '1月波动率',
   volume_ratio: '量比',
+  volume_momentum_ratio: '量能动量比',
   deviation_ma20: 'MA20 偏离率',
 };
 
@@ -40,6 +41,7 @@ const FACTOR_DESCRIPTIONS: Record<string, string> = {
   mom_3m: '3月动量 = 过去3个月的股价涨跌幅。动量类因子，周期更长，趋势更稳定。',
   vol_1m: '1月波动率 = 过去1个月日收益率的标准差。风险类因子，越高说明股价波动越大、风险越高。',
   volume_ratio: '量比 = 当日成交量 ÷ 过去5日平均成交量。成交活跃度因子，越高说明放量越明显，可能有资金介入。',
+  volume_momentum_ratio: '量能动量比：近期成交活跃度相对历史均值的比值，衡量量价配合与资金参与强度。',
   deviation_ma20: 'MA20 偏离率 = 当前股价 ÷ 20日均线 - 1。技术类因子，正值表示在均线上方（偏强），负值表示在均线下方（偏弱）。',
 };
 
@@ -101,6 +103,7 @@ export const FactorIC: React.FC<FactorICProps> = ({ data, loading, error }) => {
   const effective = data.items.filter((f) => (f.icir ?? 0) >= 1.0).length;
   const negative = data.items.filter((f) => (f.icir ?? 0) < 0).length;
   const total = data.items.length;
+  const fmtYmd = (d?: string) => (d && d.length === 8 ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : d || '--');
 
   return (
     <div className="space-y-5">
@@ -127,12 +130,23 @@ export const FactorIC: React.FC<FactorICProps> = ({ data, loading, error }) => {
         </div>
       </div>
 
+      {(data.historyRestarted || data.historyNote) && (
+        <div className="rounded-xl border border-warning/40 bg-warning/10 p-3 text-sm text-warning">
+          ⚠️ {data.historyNote || '因子 IC 历史在 a_stock v3 改版后重新累积，长期曲线不连续。'}
+          {data.earliestDate && data.latestDate && (
+            <span className="ml-1 text-secondary-text">
+              （样本区间 {fmtYmd(data.earliestDate)} ~ {fmtYmd(data.latestDate)}，约 {data.sampleDays ?? '--'} 个交易日）
+            </span>
+          )}
+        </div>
+      )}
+
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <StatCard label="统计截止日期" value={data.latestDate ? `${data.latestDate.slice(0, 4)}-${data.latestDate.slice(4, 6)}-${data.latestDate.slice(6, 8)}` : '--'} tone="primary" />
+        <StatCard label="统计截止日期" value={fmtYmd(data.latestDate)} tone="primary" />
         <StatCard
           label="跟踪因子总数"
           value={total}
-          hint="正在监控的量化指标数量"
+          hint={`样本交易日约 ${data.sampleDays ?? '--'} 天`}
         />
         <StatCard
           label="✅ 有效因子"

@@ -6,7 +6,16 @@ import { StatCard } from '../common/StatCard';
 import { EmptyState } from '../common/EmptyState';
 import { Loading } from '../common/Loading';
 import type { DailySnapshotResponse, DatedFileItem, PerformanceStockItem } from '../../types/aStock';
-import { cleanStockCode, formatPct, getOperationVariant, pctClass, formatYmdDate } from './utils';
+import {
+  cleanStockCode,
+  formatPct,
+  getOperationVariant,
+  getPoolSourceLabel,
+  getPoolSourceVariant,
+  isShortlistPool,
+  pctClass,
+  formatYmdDate,
+} from './utils';
 
 interface StockHistoryProps {
   dates: DatedFileItem[];
@@ -56,7 +65,7 @@ export const StockHistory: React.FC<StockHistoryProps> = ({
   return (
     <div className="space-y-5">
       {snapshot && (
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard label="快照日期" value={formatYmdDate(snapshot.asOfDate || selectedDate)} tone="primary" />
           <StatCard label="报告时间" value={snapshot.reportTime?.substring(5, 16) || '--'} />
           <StatCard
@@ -73,6 +82,12 @@ export const StockHistory: React.FC<StockHistoryProps> = ({
             }
           />
           <StatCard label="候选股数" value={stocks.length} />
+          <StatCard
+            label="精选池"
+            value={snapshot.shortlist?.count ?? stocks.filter((s) => isShortlistPool(s.poolSource)).length}
+            tone="success"
+            hint={snapshot.nextTradingDay ? `下一交易日 ${snapshot.nextTradingDay}` : undefined}
+          />
         </div>
       )}
 
@@ -109,6 +124,28 @@ export const StockHistory: React.FC<StockHistoryProps> = ({
                   <strong className="text-foreground">IC诊断：</strong>
                   {'overall_validity' in icDiag && <span className="mr-3">整体有效性: {String(icDiag.overall_validity)}</span>}
                   {'effective_factor_count' in icDiag && <span>有效因子数: {String(icDiag.effective_factor_count)}</span>}
+                  {snapshot.schemaFamily && (
+                    <span className="ml-3">契约: {snapshot.schemaFamily}{snapshot.schemaVersion ? ` (${snapshot.schemaVersion})` : ''}</span>
+                  )}
+                </div>
+              )}
+              {snapshot.shortlist && snapshot.shortlist.enabled && snapshot.shortlist.items.length > 0 && (
+                <div className="mb-3 rounded-lg border border-success/30 bg-success/5 p-3">
+                  <div className="text-xs font-medium text-success mb-2">⭐ 当日精选 Shortlist（{snapshot.shortlist.count}）</div>
+                  <div className="flex flex-wrap gap-2">
+                    {snapshot.shortlist.items.map((it) => (
+                      <button
+                        key={it.symbol}
+                        type="button"
+                        onClick={() => handleNavigateToChat(cleanStockCode(it.symbol), it.name)}
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-border/50 bg-card/60 px-2 py-1 text-xs hover:border-cyan/40"
+                      >
+                        <span className="font-medium text-foreground">{it.name}</span>
+                        <span className="font-mono text-secondary-text">{cleanStockCode(it.symbol)}</span>
+                        {it.patternTag && <Badge variant="info" size="sm">{it.patternTag}</Badge>}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               )}
               <div className="overflow-x-auto">
@@ -118,6 +155,7 @@ export const StockHistory: React.FC<StockHistoryProps> = ({
                       <th className="text-left py-2 px-2 font-medium">名称/代码</th>
                       <th className="text-right py-2 px-2 font-medium">综合分</th>
                       <th className="text-left py-2 px-2 font-medium">评级</th>
+                      <th className="text-left py-2 px-2 font-medium">来源</th>
                       <th className="text-right py-2 px-2 font-medium">T+1</th>
                       <th className="text-right py-2 px-2 font-medium">T+5</th>
                       <th className="text-right py-2 px-2 font-medium">T+20</th>
@@ -142,6 +180,13 @@ export const StockHistory: React.FC<StockHistoryProps> = ({
                           <td className="text-right py-2 px-2 font-semibold text-cyan">{s.finalScore.toFixed(1)}</td>
                           <td className="py-2 px-2">
                             <Badge variant={getOperationVariant(s.operationRating)} size="sm">{s.operationRating || '--'}</Badge>
+                          </td>
+                          <td className="py-2 px-2">
+                            {s.poolSource ? (
+                              <Badge variant={getPoolSourceVariant(s.poolSource)} size="sm">{getPoolSourceLabel(s.poolSource)}</Badge>
+                            ) : (
+                              <span className="text-xs text-secondary-text">--</span>
+                            )}
                           </td>
                           <td className={`text-right py-2 px-2 font-medium ${pctClass(s.perf?.retT1)}`}>{formatPct(s.perf?.retT1)}</td>
                           <td className={`text-right py-2 px-2 font-medium ${pctClass(s.perf?.retT5)}`}>{formatPct(s.perf?.retT5)}</td>

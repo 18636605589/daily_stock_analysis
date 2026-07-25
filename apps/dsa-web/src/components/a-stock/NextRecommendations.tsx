@@ -7,9 +7,16 @@ import { StatCard } from '../common/StatCard';
 import { EmptyState } from '../common/EmptyState';
 import { Loading } from '../common/Loading';
 import type { NextRecommendationsResponse, FactorStockItem } from '../../types/aStock';
-import { cleanStockCode, formatPct, getOperationVariant } from './utils';
+import {
+  cleanStockCode,
+  formatPct,
+  getOperationVariant,
+  getPoolSourceLabel,
+  getPoolSourceVariant,
+  isShortlistPool,
+} from './utils';
 
-type RatingFilterKey = 'all' | 'buy' | 'watch' | 'avoid';
+type RatingFilterKey = 'all' | 'buy' | 'watch' | 'avoid' | 'shortlist';
 
 function categorizeRating(rating: string): RatingFilterKey {
   const r = rating || '';
@@ -21,6 +28,7 @@ function categorizeRating(rating: string): RatingFilterKey {
 
 const RATING_FILTER_OPTIONS: { key: RatingFilterKey; label: string; emoji: string }[] = [
   { key: 'all', label: '全部', emoji: '📋' },
+  { key: 'shortlist', label: '精选池', emoji: '⭐' },
   { key: 'buy', label: '可介入', emoji: '🟢' },
   { key: 'watch', label: '待观察', emoji: '🟡' },
   { key: 'avoid', label: '回避', emoji: '🔴' },
@@ -87,7 +95,14 @@ function StockCard({ stock, onNavigate }: { stock: FactorStockItem; onNavigate: 
             </Tooltip>
             <span className="text-xs text-secondary-text font-mono">{code}</span>
           </div>
-          {stock.industry && <span className="text-xs text-secondary-text">{stock.industry}</span>}
+          <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+            {stock.industry && <span className="text-xs text-secondary-text">{stock.industry}</span>}
+            {stock.poolSource && (
+              <Badge variant={getPoolSourceVariant(stock.poolSource)} size="sm">
+                {getPoolSourceLabel(stock.poolSource)}
+              </Badge>
+            )}
+          </div>
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
           <Tooltip content={ratingDesc}>
@@ -118,10 +133,14 @@ function StockCard({ stock, onNavigate }: { stock: FactorStockItem; onNavigate: 
           <div className="text-sm font-medium text-foreground">{stock.factorScore.toFixed(1)}</div>
         </div>
         <div>
-          <Tooltip content="短期评分：基于技术面（量价、均线、RSI等）的短期走势打分" side="bottom">
-            <div className="text-xs text-secondary-text cursor-help border-b border-dotted border-border/40 inline-block">短期评分</div>
+          <Tooltip content={stock.shortlistScore != null ? '精选分：shortlist 池内部排序分；无精选分时显示短期技术评分' : '短期评分：基于技术面（量价、均线、RSI等）的短期走势打分'} side="bottom">
+            <div className="text-xs text-secondary-text cursor-help border-b border-dotted border-border/40 inline-block">
+              {stock.shortlistScore != null ? '精选分' : '短期评分'}
+            </div>
           </Tooltip>
-          <div className="text-sm font-medium text-foreground">{stock.shortTermScore.toFixed(1)}</div>
+          <div className="text-sm font-medium text-foreground">
+            {(stock.shortlistScore != null ? stock.shortlistScore : stock.shortTermScore).toFixed(1)}
+          </div>
         </div>
       </div>
       {stock.deepTechSignal && (
@@ -139,14 +158,22 @@ export const NextRecommendations: React.FC<NextRecommendationsProps> = ({ data, 
 
   const filteredStocks = useMemo(() => {
     if (filter === 'all') return factorData;
+    if (filter === 'shortlist') return factorData.filter((s) => isShortlistPool(s.poolSource));
     return factorData.filter((s) => categorizeRating(s.operationRating) === filter);
   }, [factorData, filter]);
 
   const ratingCounts = useMemo(() => {
-    const counts: Record<RatingFilterKey, number> = { all: factorData.length, buy: 0, watch: 0, avoid: 0 };
+    const counts: Record<RatingFilterKey, number> = {
+      all: factorData.length,
+      shortlist: 0,
+      buy: 0,
+      watch: 0,
+      avoid: 0,
+    };
     for (const s of factorData) {
+      if (isShortlistPool(s.poolSource)) counts.shortlist++;
       const cat = categorizeRating(s.operationRating);
-      counts[cat]++;
+      if (cat !== 'all' && cat !== 'shortlist') counts[cat]++;
     }
     return counts;
   }, [factorData]);
@@ -173,8 +200,8 @@ export const NextRecommendations: React.FC<NextRecommendationsProps> = ({ data, 
           <div className="text-sm text-foreground/90 leading-relaxed">
             <p className="font-semibold text-cyan mb-1">使用说明：</p>
             <ul className="space-y-1 text-secondary-text">
-              <li>• 这里是收盘后量化模型筛选出的<strong className="text-foreground">次日候选股票</strong>，按综合评分从高到低排序；</li>
-              <li>• <strong className="text-cyan">综合评分</strong>越高越值得关注，80分以上为优质标的；</li>
+              <li>• 这里是收盘后量化模型筛选出的<strong className="text-foreground">次日候选股票</strong>；精选池票会置顶；</li>
+              <li>• <strong className="text-cyan">综合评分</strong>越高越值得关注；⭐ 精选池来自 shortlist 规则（热点/龙虎榜/涨停触达等）；</li>
               <li>• 标签颜色：<span className="text-success font-medium">绿色=积极关注</span>，<span className="text-warning font-medium">黄色=观察等待</span>，<span className="text-danger font-medium">红色=谨慎回避</span>；</li>
               <li>• <strong className="text-foreground">点击任意股票卡片</strong>可跳转到问股页面进行AI深度分析；</li>
               <li>• 次日早上09:26集合竞价结束、09:35开盘后会有盘前复核更新最终建议，请关注「盘前复盘」。</li>
@@ -183,11 +210,24 @@ export const NextRecommendations: React.FC<NextRecommendationsProps> = ({ data, 
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <StatCard label="报告日期" value={data.asOfDate || '--'} hint={`下一交易日: ${data.nextTradingDay || '--'}`} tone="primary" />
+        <StatCard
+          label="精选池"
+          value={data.shortlistCount ?? ratingCounts.shortlist}
+          tone="success"
+          hint={data.shortlistMeta?.emptyReason ? String(data.shortlistMeta.emptyReason) : 'shortlist 置顶票数'}
+        />
         <StatCard label="涨停家数" value={data.market?.limitUp ?? '--'} tone="success" hint="反映市场热度" />
         <StatCard label="跌停家数" value={data.market?.limitDown ?? '--'} tone={data.market && data.market.limitDown > 30 ? 'danger' : 'default'} hint="超过30家需警惕系统性风险" />
       </div>
+      {(data.schemaVersion || data.schemaFamily) && (
+        <div className="text-xs text-secondary-text flex flex-wrap gap-2 items-center">
+          {data.schemaFamily && <Badge variant={data.schemaFamily === 'v3' ? 'success' : 'info'} size="sm">契约 {data.schemaFamily}</Badge>}
+          {data.schemaVersion && <span className="font-mono">schema: {data.schemaVersion}</span>}
+          {data.purpose && <span className="opacity-80">· {data.purpose}</span>}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <Card title="市场指数" subtitle="MARKET OVERVIEW" className="lg:col-span-1">

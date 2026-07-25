@@ -120,7 +120,7 @@ export const AStockPage: React.FC = () => {
     <AppPage>
       <PageHeader
         title="📈 A-Stock 智能荐股"
-        description="来自 a_stock 量化选股引擎的每日推荐与复盘结果"
+        description="来自 a_stock 量化选股引擎的每日推荐与复盘结果（已对齐 v3 契约）"
         actions={headerActions}
       />
 
@@ -138,11 +138,25 @@ export const AStockPage: React.FC = () => {
       )}
 
       {status && status.available && (
-        <div className="mb-4 flex items-center gap-2 text-xs text-secondary-text">
+        <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-secondary-text">
           <span>📂 数据源: <code className="text-foreground">{status.dataDir}</code></span>
           <span>·</span>
           <Badge variant="info" size="sm">历史日报 {status.dailyCount} 份</Badge>
-          <Badge variant="info" size="sm">盘前复盘 {status.premarketCount} 份</Badge>
+          <Badge variant="info" size="sm">盘前复盘 {status.premarketDayCount ?? '--'} 天 / {status.premarketCount} 次</Badge>
+          {status.schemaFamily && (
+            <Badge variant={status.schemaFamily === 'v3' ? 'success' : 'default'} size="sm">
+              契约 {status.schemaFamily}
+            </Badge>
+          )}
+          {status.latestAsOfDate && (
+            <span>最新 as_of: <code className="text-foreground">{status.latestAsOfDate}</code></span>
+          )}
+          {status.latestNextTradingDay && (
+            <span>下一交易日: <code className="text-foreground">{status.latestNextTradingDay}</code></span>
+          )}
+          {status.schemaVersion && (
+            <span className="font-mono opacity-80">{status.schemaVersion}</span>
+          )}
         </div>
       )}
 

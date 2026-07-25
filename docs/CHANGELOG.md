@@ -11,6 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/).
 
 <!-- 新条目格式：- [类型] 描述（类型取值：新功能/改进/修复/文档/测试/chore）-->
 <!-- 每条独立一行追加到本段末尾，无需分类标题，合并时冲突最小 -->
+- [改进] A-Stock 集成对齐 a_stock v3：暴露 schema 家族、shortlist/pool_source、盘前竞价字段，绩效默认净收益并拆分精选/shortlist 统计
+- [改进] A-Stock Web 页面展示精选池筛选、竞价强弱/跳空、因子 IC 历史重算提示与可操作绩效口径
+- [修复] 修复 A-Stock 状态条盘前复盘计数语义不一致（premarket_count 现返回全部时间点数量，新增 premarket_day_count 区分天数），文案改为"X 天 / Y 次"
+- [文档] 新增 docs/a-stock-integration.md，.env.example 补充 A_STOCK_ROOT
+- [测试] 新增 tests/test_a_stock_service.py 覆盖 v3 契约读取与绩效子集统计
 
 ## [3.24.1] - 2026-06-28
 

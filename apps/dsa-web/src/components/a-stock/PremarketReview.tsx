@@ -6,7 +6,13 @@ import { StatCard } from '../common/StatCard';
 import { EmptyState } from '../common/EmptyState';
 import { Loading } from '../common/Loading';
 import type { PremarketReviewResponse, PremarketStockItem, DatedFileItem } from '../../types/aStock';
-import { cleanStockCode, formatNum, formatPct } from './utils';
+import {
+  cleanStockCode,
+  formatNum,
+  formatPct,
+  getAuctionStrengthLabel,
+  getAuctionStrengthVariant,
+} from './utils';
 
 type FilterKey = 'all' | 'buy' | 'watch' | 'avoid';
 
@@ -109,6 +115,11 @@ function PremarketStockCard({ stock, onNavigate, isCircuitBreakerDay }: Premarke
             {stock.operationRating && stock.operationRating !== stock.action && (
               <Badge variant="default" size="sm">{stock.operationRating}</Badge>
             )}
+            {stock.auctionStrength && (
+              <Badge variant={getAuctionStrengthVariant(stock.auctionStrength)} size="sm">
+                {getAuctionStrengthLabel(stock.auctionStrength)}
+              </Badge>
+            )}
             {hasCircuitBreaker && <Badge variant="danger" size="sm">⛔ 断路器</Badge>}
           </div>
         </div>
@@ -117,6 +128,11 @@ function PremarketStockCard({ stock, onNavigate, isCircuitBreakerDay }: Premarke
           <div className={`text-sm font-medium ${(stock.changePct ?? 0) >= 0 ? 'text-danger' : 'text-success'}`}>
             {formatPct(stock.changePct)}
           </div>
+          {stock.openGapPct !== null && stock.openGapPct !== undefined && (
+            <div className={`text-xs ${stock.openGapPct >= 0 ? 'text-danger' : 'text-success'}`}>
+              跳空 {formatPct(stock.openGapPct)}
+            </div>
+          )}
         </div>
       </div>
 
@@ -131,6 +147,18 @@ function PremarketStockCard({ stock, onNavigate, isCircuitBreakerDay }: Premarke
           <div className="rounded bg-card/50 p-1.5">
             <div className="text-xs text-secondary-text">量比</div>
             <div className="text-sm font-medium text-foreground">{formatNum(stock.volumeRatio)}</div>
+          </div>
+        )}
+        {stock.bidAskRatio !== null && stock.bidAskRatio !== undefined && (
+          <div className="rounded bg-card/50 p-1.5">
+            <div className="text-xs text-secondary-text">委比</div>
+            <div className="text-sm font-medium text-foreground">{formatNum(stock.bidAskRatio)}</div>
+          </div>
+        )}
+        {stock.auctionScore !== null && stock.auctionScore !== undefined && (
+          <div className="rounded bg-card/50 p-1.5">
+            <div className="text-xs text-secondary-text">竞价分</div>
+            <div className="text-sm font-medium text-foreground">{formatNum(stock.auctionScore, 1)}</div>
           </div>
         )}
         {stock.position && (
@@ -164,6 +192,9 @@ function PremarketStockCard({ stock, onNavigate, isCircuitBreakerDay }: Premarke
           </div>
         )}
       </div>
+      {stock.quoteSource && (
+        <div className="mt-2 text-[11px] text-secondary-text/80">行情源: {stock.quoteSource}{stock.auctionEnriched ? ' · 竞价增强' : ''}</div>
+      )}
 
       {stock.riskFlags && !hasCircuitBreaker && (
         <div className="mt-2 text-xs text-warning">⚠️ {stock.riskFlags}</div>

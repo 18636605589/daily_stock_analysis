@@ -43,7 +43,7 @@
 | AI 决策报告 | 核心结论、评分、趋势、买卖点位、风险警报、催化因素、操作检查清单 |
 | 多市场数据聚合 | A股、港股、美股、ETF：行情、K 线、技术指标、资金流、筹码、新闻、公告和基本面；日股/韩股（`.T` / `.KS` / `.KQ`）：YFinance 日线与基础行情、技术指标可用，`capital_flow`、`dragon_tiger`、`boards` 与部分高阶区块会按市场边界降级为 `not_supported`（见 [市场支持边界](docs/market-support.md)） |
 | Web / 桌面工作台 | 手动分析、任务进度、历史报告、完整 Markdown、回测、持仓、配置管理、浅色 / 深色主题 |
-| A-Stock 荐股集成 | 对接 a_stock 量化选股引擎，在 Web 页面集中展示**今日荐股、盘前复盘、历史荐股、因子 IC 追踪、绩效统计**（5个 Tab），支持按日期回溯历史推荐和收益率表现 |
+| A-Stock 荐股集成 | 对接 a_stock 量化选股引擎（v3 契约），在 Web 页面集中展示**今日荐股、盘前复盘、历史荐股、因子 IC 追踪、绩效统计**（5个 Tab），含 shortlist/精选可操作口径与净收益统计；详见 [docs/a-stock-integration.md](docs/a-stock-integration.md) |
 | Agent 策略问股 | 多轮追问，支持均线、缠论、波浪、趋势、热点、事件、成长、预期等 15 种内置策略，覆盖 Web/Bot/API |
 | 智能导入与补全 | 图片、CSV/Excel、剪贴板导入；股票代码/名称/拼音/别名补全 |
 | 自动化与推送 | GitHub Actions、Docker、本地定时任务、FastAPI 服务和企业微信/飞书/Telegram/Discord/Slack/邮件推送 |

@@ -2,10 +2,17 @@
 """A-Stock 数据读取服务。
 
 职责：
-- 从 a_stock 输出目录读取 JSON/CSV 契约文件
+- 从 a_stock 输出目录读取 JSON/CSV 契约文件（兼容 v2 落盘 + v3 扩展字段）
 - 扫描按月归档的历史文件
 - 处理 NaN/缺失字段等容错
 - 提供给 API endpoint 的纯数据读取方法，不含 HTTP 逻辑
+
+契约路径（相对 A_STOCK_ROOT）：
+- state/next_trading_day.json
+- data/daily/YYYYMM/a_stock_data_YYYYMMDD_HHMM.json
+- data/premarket/YYYYMM/a_stock_premarket_validate_*.json
+- reports/track/factor_ic_history.csv
+- reports/track/top15_performance.csv  （文件名沿用；内容为 TOP-N / 含净收益口径）
 """
 
 from __future__ import annotations
@@ -39,9 +46,23 @@ _PREMARKET_PHASE_KEYWORDS: List[Tuple[str, str]] = [
     ("close", "盘后"),
 ]
 
+# a_stock v3 起因子 IC 从空表重算；用于前端提示历史断档（非硬编码业务规则，仅展示元信息）
+FACTOR_IC_V3_RESTART_NOTE = (
+    "a_stock v3 改版后因子 IC 从空表重新累积，"
+    "勿与 archive_pre_v3_rewrite 旧数据混用。"
+)
+
+_BUY_ACTIONS = {"建仓试仓", "开盘计划/小仓试探", "回踩低吸", "趋势跟踪"}
+_AVOID_ACTIONS = {"不追高", "放弃/剔除"}
+
+_STRING_FIELDS = {
+    "compute_date", "report_date", "factor", "direction", "symbol", "code",
+    "name", "industry", "operation_rating", "deep_tech_rating", "pool_source",
+}
+
 
 def _get_phase_from_filename(filename: str) -> str:
-    """从文件名中提取阶段标签（preopen→集合竞价, open-confirm→开盘确认等），未识别返回空字符串。"""
+    """从文件名中提取阶段标签（preopen→集合竞价 等），未识别返回空字符串。"""
     name_lower = filename.lower()
     for keyword, label in _PREMARKET_PHASE_KEYWORDS:
         if keyword in name_lower:
@@ -50,7 +71,7 @@ def _get_phase_from_filename(filename: str) -> str:
 
 
 def _get_phase_key_from_filename(filename: str) -> str:
-    """从文件名中提取阶段key（preopen/open-confirm等），未识别返回空字符串。"""
+    """从文件名中提取阶段 key（preopen/open-confirm 等），未识别返回空字符串。"""
     name_lower = filename.lower()
     for keyword, _ in _PREMARKET_PHASE_KEYWORDS:
         if keyword in name_lower:
@@ -78,12 +99,8 @@ def _clean_nan(obj: Any) -> Any:
     return obj
 
 
-_BUY_ACTIONS = {"建仓试仓", "开盘计划/小仓试探", "回踩低吸", "趋势跟踪"}
-_AVOID_ACTIONS = {"不追高", "放弃/剔除"}
-
-
 def _categorize_action(action: str) -> str:
-    """将 a_stock 引擎原始 action 归一化为 buy/watch/avoid 三类，便于前端统计与着色。"""
+    """将 a_stock 引擎原始 action 归一化为 buy/watch/avoid。"""
     if action in _BUY_ACTIONS:
         return "buy"
     if action in _AVOID_ACTIONS:
@@ -106,14 +123,8 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
         return None
 
 
-_STRING_FIELDS = {
-    "compute_date", "report_date", "factor", "direction", "symbol", "code",
-    "name", "industry", "operation_rating",
-}
-
-
 def _load_csv(path: Path) -> List[Dict[str, Any]]:
-    """加载 CSV 文件为字典列表，失败返回空列表。数值字段自动转 float，字符串字段保留。"""
+    """加载 CSV 为字典列表；数值字段转 float，字符串字段保留。"""
     try:
         with open(path, "r", encoding="utf-8") as f:
             reader = csv.DictReader(f)
@@ -125,7 +136,7 @@ def _load_csv(path: Path) -> List[Dict[str, Any]]:
                         cleaned[k] = None
                     elif k in _STRING_FIELDS:
                         sval = str(v).strip()
-                        if sval.endswith(".0") and sval.replace(".", "").isdigit():
+                        if sval.endswith(".0") and sval.replace(".", "", 1).isdigit():
                             sval = sval[:-2]
                         cleaned[k] = sval
                     else:
@@ -163,12 +174,44 @@ def _safe_int(val: Any) -> Optional[int]:
     return int(f)
 
 
-def _scan_dated_files(base_dir: Path, prefix: str, suffix: str = ".json") -> List[Dict[str, str]]:
-    """扫描按月归档的文件，返回 [{date, timestamp, path, label}] 列表（按日期倒序）。
+def _as_bool(val: Any) -> Optional[bool]:
+    """宽松解析 bool；空值返回 None（表示字段缺失）。"""
+    if val is None or val == "":
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if isinstance(val, float) and (math.isnan(val) or math.isinf(val)):
+            return None
+        return bool(int(val))
+    s = str(val).strip().lower()
+    if s in ("1", "1.0", "true", "yes", "y"):
+        return True
+    if s in ("0", "0.0", "false", "no", "n"):
+        return False
+    return None
 
-    目录结构: base_dir/YYYYMM/{prefix}_YYYYMMDD_HHMM{suffix}
-    同一日期有多份文件时只取最新一份（最大 HHMM）。
-    """
+
+def _schema_family(schema_version: str) -> str:
+    """从 schema_version 字符串推断契约家族。"""
+    sv = (schema_version or "").lower()
+    if "v3" in sv or "next_trading_day.v3" in sv or "analysis_v3" in sv:
+        return "v3"
+    if sv:
+        return "legacy"
+    return "unknown"
+
+
+def _prefer_net(row: Dict[str, Any], net_key: str, gross_key: str) -> Optional[float]:
+    """优先净收益口径，缺失时回退毛收益。"""
+    net = _safe_float(row.get(net_key))
+    if net is not None:
+        return net
+    return _safe_float(row.get(gross_key))
+
+
+def _scan_dated_files(base_dir: Path, prefix: str, suffix: str = ".json") -> List[Dict[str, str]]:
+    """扫描按月归档文件，返回 [{date, timestamp, path, label}]（按日期倒序，同日取最新 HHMM）。"""
     if not base_dir.is_dir():
         return []
 
@@ -200,7 +243,7 @@ def _scan_dated_files(base_dir: Path, prefix: str, suffix: str = ".json") -> Lis
 
 
 def _get_time_phase_label(time_str: str) -> str:
-    """根据HHMM时间返回阶段标签。"""
+    """根据 HHMM 返回阶段标签。"""
     if len(time_str) != 4 or not time_str.isdigit():
         return ""
     hhmm = int(time_str)
@@ -214,7 +257,7 @@ def _get_time_phase_label(time_str: str) -> str:
 
 
 def _scan_all_premarket_files(base_dir: Path, prefix: str, suffix: str = ".json") -> List[Dict[str, str]]:
-    """扫描盘前复盘所有时间点文件（同一日期的多次复核全部返回，不去重）。"""
+    """扫描盘前复盘全部时间点（同一日期多次复核不去重）。"""
     if not base_dir.is_dir():
         return []
 
@@ -258,6 +301,78 @@ def _format_date_label(date_str: str) -> str:
     return date_str
 
 
+def _map_factor_stock_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    """映射 next/daily 中的 factor_data 条目（含 v3 pool/shortlist 字段）。"""
+    return {
+        "symbol": item.get("symbol", "") or "",
+        "name": item.get("name", "") or "",
+        "industry": item.get("industry", "") or "",
+        "factor_score": _safe_float(item.get("factor_score")) or 0.0,
+        "final_score": _safe_float(item.get("final_score")) or 0.0,
+        "short_term_score": _safe_float(item.get("short_term_score")) or 0.0,
+        "operation_rating": item.get("operation_rating", "") or "",
+        "deep_tech_rating": item.get("deep_tech_rating", "") or "",
+        "deep_tech_signal": item.get("deep_tech_signal", "") or "",
+        "pool_source": item.get("pool_source", "") or "",
+        "shortlist_score": _safe_float(item.get("shortlist_score")),
+    }
+
+
+def _is_shortlist_pool(pool_source: str) -> bool:
+    ps = (pool_source or "").lower()
+    return "shortlist" in ps
+
+
+def _slim_shortlist_item(item: Dict[str, Any]) -> Dict[str, Any]:
+    sources = item.get("sources") or []
+    if not isinstance(sources, list):
+        sources = [str(sources)] if sources else []
+    return {
+        "symbol": item.get("symbol", "") or "",
+        "name": item.get("name", "") or "",
+        "industry": item.get("industry", "") or "",
+        "final_score": _safe_float(item.get("final_score")),
+        "factor_score": _safe_float(item.get("factor_score")),
+        "short_term_score": _safe_float(item.get("short_term_score")),
+        "shortlist_score": _safe_float(item.get("shortlist_score")),
+        "operation_rating": item.get("operation_rating", "") or "",
+        "deep_tech_rating": item.get("deep_tech_rating", "") or "",
+        "deep_tech_signal": item.get("deep_tech_signal", "") or "",
+        "pattern_tag": item.get("pattern_tag", "") or "",
+        "sources": [str(s) for s in sources],
+        "auction_watch": item.get("auction_watch", "") or "",
+        "short_term_reason": item.get("short_term_reason", "") or "",
+    }
+
+
+def _compute_return_stats(items: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """基于已映射的 ret_t1 / ret_t5 计算摘要统计。"""
+    ret_t1_vals: List[float] = []
+    ret_t5_vals: List[float] = []
+    win_t1 = 0
+    win_t5 = 0
+    for item in items:
+        t1 = item.get("ret_t1")
+        if t1 is not None:
+            ret_t1_vals.append(float(t1))
+            if t1 > 0:
+                win_t1 += 1
+        t5 = item.get("ret_t5")
+        if t5 is not None:
+            ret_t5_vals.append(float(t5))
+            if t5 > 0:
+                win_t5 += 1
+    t1_count = len(ret_t1_vals)
+    t5_count = len(ret_t5_vals)
+    return {
+        "total_count": len(items),
+        "avg_ret_t1": (sum(ret_t1_vals) / t1_count) if t1_count else None,
+        "avg_ret_t5": (sum(ret_t5_vals) / t5_count) if t5_count else None,
+        "win_rate_t1": (win_t1 / t1_count * 100.0) if t1_count else None,
+        "win_rate_t5": (win_t5 / t5_count * 100.0) if t5_count else None,
+    }
+
+
 class AStockService:
     """A-Stock 数据读取服务（无状态，每次调用都从磁盘读取）。"""
 
@@ -272,13 +387,36 @@ class AStockService:
     def get_data_status(self) -> Dict[str, Any]:
         available = self.root.is_dir() and self.state_dir.is_dir()
         daily_files = _scan_dated_files(self.data_daily_dir, "a_stock_data_")
-        premarket_files = _scan_dated_files(self.data_premarket_dir, "a_stock_premarket_validate_")
+        premarket_days = _scan_dated_files(self.data_premarket_dir, "a_stock_premarket_validate_")
+        premarket_all = _scan_all_premarket_files(self.data_premarket_dir, "a_stock_premarket_validate_")
+
+        schema_version = ""
+        as_of_date = ""
+        next_trading_day = ""
+        if available:
+            nxt = _load_json(self.state_dir / "next_trading_day.json")
+            if nxt:
+                schema_version = str(nxt.get("schema_version", "") or "")
+                as_of_date = str(nxt.get("as_of_date", "") or "")
+                next_trading_day = str(nxt.get("next_trading_day", "") or "")
+            elif daily_files:
+                snap = _load_json(Path(daily_files[0]["path"]))
+                if snap:
+                    schema_version = str(snap.get("schema_version", "") or "")
+                    as_of_date = str(snap.get("as_of_date", "") or "")
+                    next_trading_day = str(snap.get("next_trading_day", "") or "")
+
         return {
             "available": available,
             "data_dir": str(self.root),
             "message": "" if available else f"A-Stock 数据目录不存在: {self.root}",
             "daily_count": len(daily_files),
-            "premarket_count": len(premarket_files),
+            "premarket_count": len(premarket_all),
+            "premarket_day_count": len(premarket_days),
+            "schema_version": schema_version,
+            "schema_family": _schema_family(schema_version),
+            "latest_as_of_date": as_of_date,
+            "latest_next_trading_day": next_trading_day,
         }
 
     def get_next_recommendations(self) -> Optional[Dict[str, Any]]:
@@ -291,43 +429,66 @@ class AStockService:
         indices_raw = market_raw.get("indices", {}) or {}
         indices = {}
         for name, info in indices_raw.items():
+            if not isinstance(info, dict):
+                continue
             indices[name] = {
                 "price": _safe_float(info.get("price")) or 0.0,
                 "change_pct": _safe_float(info.get("change_pct")) or 0.0,
             }
-        factor_data = []
-        for item in data.get("factor_data", []) or []:
-            factor_data.append({
-                "symbol": item.get("symbol", ""),
-                "name": item.get("name", ""),
-                "industry": item.get("industry", ""),
-                "factor_score": _safe_float(item.get("factor_score")) or 0.0,
-                "final_score": _safe_float(item.get("final_score")) or 0.0,
-                "short_term_score": _safe_float(item.get("short_term_score")) or 0.0,
-                "operation_rating": item.get("operation_rating", ""),
-                "deep_tech_rating": item.get("deep_tech_rating", ""),
-                "deep_tech_signal": item.get("deep_tech_signal", ""),
-            })
+        factor_data = [_map_factor_stock_item(item) for item in (data.get("factor_data") or [])]
+        # shortlist 票置顶，便于前端默认优先展示
+        factor_data.sort(
+            key=lambda x: (
+                0 if _is_shortlist_pool(str(x.get("pool_source") or "")) else 1,
+                -(x.get("final_score") or 0.0),
+            )
+        )
+        shortlist_meta = data.get("shortlist_meta") or {}
+        if not isinstance(shortlist_meta, dict):
+            shortlist_meta = {}
+        selection_context = data.get("selection_context") or {}
+        if not isinstance(selection_context, dict):
+            selection_context = {}
+        source = data.get("source") or {}
+        if not isinstance(source, dict):
+            source = {}
+
+        schema_version = str(data.get("schema_version", "") or "")
+        shortlist_count = sum(
+            1 for x in factor_data if _is_shortlist_pool(str(x.get("pool_source") or ""))
+        )
         return {
-            "schema_version": data.get("schema_version", ""),
-            "report_time": data.get("report_time", ""),
-            "as_of_date": data.get("as_of_date", ""),
-            "next_trading_day": data.get("next_trading_day", ""),
+            "schema_version": schema_version,
+            "schema_family": _schema_family(schema_version),
+            "purpose": str(data.get("purpose", "") or ""),
+            "report_time": data.get("report_time", "") or "",
+            "as_of_date": data.get("as_of_date", "") or "",
+            "next_trading_day": data.get("next_trading_day", "") or "",
             "market": {
                 "indices": indices,
                 "limit_up": _safe_int(market_raw.get("limit_up")) or 0,
                 "limit_down": _safe_int(market_raw.get("limit_down")) or 0,
             },
             "factor_data": factor_data,
+            "shortlist_meta": {
+                "has_hot": bool(shortlist_meta.get("has_hot")),
+                "has_lhb": bool(shortlist_meta.get("has_lhb")),
+                "has_limit_up_hit": bool(shortlist_meta.get("has_limit_up_hit")),
+                "empty_reason": shortlist_meta.get("empty_reason"),
+                "count": _safe_int(shortlist_meta.get("count")) if shortlist_meta.get("count") is not None else shortlist_count,
+            },
+            "selection_context": _clean_nan(selection_context),
+            "source": {str(k): str(v) for k, v in source.items()},
+            "shortlist_count": shortlist_count,
             "data_dir": str(self.root),
         }
 
     def get_premarket_dates(self) -> List[Dict[str, str]]:
-        """返回盘前复盘历史时间点列表（倒序，同一天的多次复核全部返回）。"""
+        """返回盘前复盘历史时间点列表（倒序，同一天多次复核全部返回）。"""
         return _scan_all_premarket_files(self.data_premarket_dir, "a_stock_premarket_validate_")
 
     def get_premarket_review(self, date_or_ts: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """读取盘前复盘；date_or_ts 为 None 取最新；支持 YYYYMMDD（取当天最新）或 YYYYMMDD_HHMM（精确时间点）。"""
+        """读取盘前复盘；None 取最新；支持 YYYYMMDD / YYYYMMDD_HHMM / YYYYMMDD_HHMM_phase。"""
         files = self.get_premarket_dates()
         if not files:
             return None
@@ -346,23 +507,23 @@ class AStockService:
             return None
         results = []
         for item in data.get("results", []) or []:
-            action_raw = item.get("action", "")
+            action_raw = item.get("action", "") or ""
             results.append({
-                "symbol": item.get("symbol", ""),
-                "code": item.get("code", ""),
-                "name": item.get("name", ""),
-                "industry": item.get("industry", ""),
-                "operation_rating": item.get("operation_rating", ""),
+                "symbol": item.get("symbol", "") or "",
+                "code": item.get("code", "") or "",
+                "name": item.get("name", "") or "",
+                "industry": item.get("industry", "") or "",
+                "operation_rating": item.get("operation_rating", "") or "",
                 "final_score": _safe_float(item.get("final_score")) or 0.0,
                 "factor_score": _safe_float(item.get("factor_score")) or 0.0,
                 "short_term_score": _safe_float(item.get("short_term_score")),
-                "deep_tech_rating": item.get("deep_tech_rating", ""),
-                "deep_tech_signal": item.get("deep_tech_signal", ""),
+                "deep_tech_rating": item.get("deep_tech_rating", "") or "",
+                "deep_tech_signal": item.get("deep_tech_signal", "") or "",
                 "action": action_raw,
                 "action_category": _categorize_action(action_raw),
                 "position": str(item.get("position", "") or ""),
-                "reason": item.get("reason", ""),
-                "risk_flags": item.get("risk_flags", ""),
+                "reason": item.get("reason", "") or "",
+                "risk_flags": item.get("risk_flags", "") or "",
                 "change_pct": _safe_float(item.get("change_pct")),
                 "volume_ratio": _safe_float(item.get("volume_ratio")),
                 "latest": _safe_float(item.get("latest")),
@@ -376,19 +537,28 @@ class AStockService:
                 "stop_loss": _safe_float(item.get("stop_loss")),
                 "target_price": _safe_float(item.get("target_price")),
                 "risk_reward": _safe_float(item.get("risk_reward")),
+                # v3 竞价增强字段
+                "quote_source": item.get("quote_source", "") or "",
+                "auction_strength": item.get("auction_strength", "") or "",
+                "auction_score": _safe_float(item.get("auction_score")),
+                "auction_turnover": _safe_float(item.get("auction_turnover")),
+                "bid_ask_ratio": _safe_float(item.get("bid_ask_ratio")),
+                "auction_enriched": _as_bool(item.get("auction_enriched")),
+                "open_gap_pct": _safe_float(item.get("open_gap_pct")),
+                "ref_price": _safe_float(item.get("ref_price")) if item.get("ref_price") not in ("-", "") else None,
             })
         date_str_out = target["date"]
         time_str_out = target.get("time", "")
         phase_out = target.get("phase", "") or data.get("phase_label", "")
         return {
-            "validate_time": data.get("validate_time", ""),
-            "source_data": data.get("source_data", ""),
-            "source_report_time": data.get("source_report_time", ""),
-            "phase": data.get("phase", ""),
-            "phase_label": phase_out or data.get("phase_label", ""),
-            "confidence": data.get("confidence", ""),
-            "market_bias": data.get("market_bias", ""),
-            "market_reason": data.get("market_reason", ""),
+            "validate_time": data.get("validate_time", "") or "",
+            "source_data": data.get("source_data", "") or "",
+            "source_report_time": data.get("source_report_time", "") or "",
+            "phase": data.get("phase", "") or "",
+            "phase_label": phase_out or data.get("phase_label", "") or "",
+            "confidence": data.get("confidence", "") or "",
+            "market_bias": data.get("market_bias", "") or "",
+            "market_reason": data.get("market_reason", "") or "",
             "elapsed_seconds": _safe_float(data.get("elapsed_seconds")) or 0.0,
             "results": results,
             "date": date_str_out,
@@ -412,42 +582,80 @@ class AStockService:
         data = _load_json(Path(target["path"]))
         if data is None:
             return None
-        factor_data = []
-        for item in data.get("factor_data", []) or []:
-            factor_data.append({
-                "symbol": item.get("symbol", ""),
-                "name": item.get("name", ""),
-                "industry": item.get("industry", ""),
-                "factor_score": _safe_float(item.get("factor_score")) or 0.0,
-                "final_score": _safe_float(item.get("final_score")) or 0.0,
-                "short_term_score": _safe_float(item.get("short_term_score")),
-                "operation_rating": item.get("operation_rating", ""),
-                "deep_tech_rating": item.get("deep_tech_rating", ""),
-                "deep_tech_signal": item.get("deep_tech_signal", ""),
-            })
+        factor_data = [_map_factor_stock_item(item) for item in (data.get("factor_data") or [])]
+        factor_data.sort(
+            key=lambda x: (
+                0 if _is_shortlist_pool(str(x.get("pool_source") or "")) else 1,
+                -(x.get("final_score") or 0.0),
+            )
+        )
+
+        shortlist_raw = data.get("shortlist") or {}
+        shortlist_items: List[Dict[str, Any]] = []
+        shortlist_enabled = False
+        shortlist_meta: Dict[str, Any] = {}
+        if isinstance(shortlist_raw, dict):
+            shortlist_enabled = bool(shortlist_raw.get("enabled"))
+            shortlist_meta = shortlist_raw.get("meta") or {}
+            if not isinstance(shortlist_meta, dict):
+                shortlist_meta = {}
+            for item in shortlist_raw.get("items") or []:
+                if isinstance(item, dict):
+                    shortlist_items.append(_slim_shortlist_item(item))
+        elif isinstance(shortlist_raw, list):
+            shortlist_enabled = bool(shortlist_raw)
+            for item in shortlist_raw:
+                if isinstance(item, dict):
+                    shortlist_items.append(_slim_shortlist_item(item))
+
+        schema_version = str(data.get("schema_version", "") or "")
+        selection_context = data.get("selection_context") or {}
+        if not isinstance(selection_context, dict):
+            selection_context = {}
+
         return {
-            "report_time": data.get("report_time", ""),
-            "as_of_date": data.get("as_of_date", ""),
+            "schema_version": schema_version,
+            "schema_family": _schema_family(schema_version),
+            "report_time": data.get("report_time", "") or "",
+            "as_of_date": data.get("as_of_date", "") or "",
+            "next_trading_day": data.get("next_trading_day", "") or "",
             "market": data.get("market", {}) or {},
             "factor_data": factor_data,
             "technical": data.get("technical", []) or [],
             "ic_diagnostics": data.get("ic_diagnostics", {}) or {},
             "risk": data.get("risk", {}) or {},
+            "selection_context": _clean_nan(selection_context),
+            "shortlist": {
+                "enabled": shortlist_enabled,
+                "count": len(shortlist_items),
+                "meta": _clean_nan(shortlist_meta) if shortlist_meta else {},
+                "items": shortlist_items,
+            },
             "source_path": target["path"],
         }
 
     def get_factor_ic(self) -> Dict[str, Any]:
-        """读取因子 IC 历史，返回每个因子最新一条数据。"""
+        """读取因子 IC 历史；每个因子取最新一条，并附 v3 历史元信息。"""
         path = self.report_track_dir / "factor_ic_history.csv"
         rows = _load_csv(path)
         if not rows:
-            return {"items": [], "latest_date": ""}
+            return {
+                "items": [],
+                "latest_date": "",
+                "earliest_date": "",
+                "sample_days": 0,
+                "history_restarted": True,
+                "history_note": FACTOR_IC_V3_RESTART_NOTE,
+            }
         latest_by_factor: Dict[str, Dict[str, Any]] = {}
+        all_dates: List[str] = []
         for row in rows:
-            factor = str(row.get("factor", ""))
+            factor = str(row.get("factor", "") or "")
             if not factor:
                 continue
-            date_val = str(row.get("compute_date", ""))
+            date_val = str(row.get("compute_date", "") or "")
+            if date_val:
+                all_dates.append(date_val)
             existing = latest_by_factor.get(factor)
             if existing is None or date_val > str(existing.get("compute_date", "")):
                 latest_by_factor[factor] = {
@@ -460,23 +668,45 @@ class AStockService:
                     "n_days": _safe_int(row.get("n_days")) or 0,
                 }
         items = sorted(latest_by_factor.values(), key=lambda x: -(x.get("icir") or -999))
-        latest_date = max((str(it.get("compute_date", "")) for it in items), default="")
-        return {"items": items, "latest_date": latest_date}
+        latest_date = max(all_dates) if all_dates else ""
+        earliest_date = min(all_dates) if all_dates else ""
+        sample_days = len(set(all_dates))
+        # v3 改版后样本通常较短；有数据也统一给出说明，避免与旧 IC 混淆
+        return {
+            "items": items,
+            "latest_date": latest_date,
+            "earliest_date": earliest_date,
+            "sample_days": sample_days,
+            "history_restarted": True,
+            "history_note": FACTOR_IC_V3_RESTART_NOTE,
+        }
 
     def get_performance(self) -> Dict[str, Any]:
-        """读取推荐绩效追踪 CSV，计算统计摘要。"""
+        """读取推荐绩效追踪 CSV；默认净收益口径，并拆分精选/shortlist 统计。"""
         path = self.report_track_dir / "top15_performance.csv"
         rows = _load_csv(path)
+        empty_stats = {
+            "total_count": 0,
+            "avg_ret_t1": None,
+            "avg_ret_t5": None,
+            "win_rate_t1": None,
+            "win_rate_t5": None,
+        }
         if not rows:
-            return {"stats": {}, "items": []}
+            return {
+                "return_basis": "net",
+                "track_label": "top_n",
+                "note": "收益默认优先使用净收益口径（*_net）；文件名 top15_performance 为历史兼容命名。",
+                "stats": empty_stats,
+                "actionable_stats": empty_stats,
+                "shortlist_stats": empty_stats,
+                "items": [],
+            }
+
         items: List[Dict[str, Any]] = []
-        ret_t1_vals: List[float] = []
-        ret_t5_vals: List[float] = []
-        win_t1 = 0
-        win_t5 = 0
-        t1_count = 0
-        t5_count = 0
         for row in rows:
+            is_actionable = _as_bool(row.get("is_actionable"))
+            is_shortlist = _as_bool(row.get("is_shortlist"))
             item = {
                 "report_date": str(row.get("report_date", "") or ""),
                 "symbol": str(row.get("symbol", "") or ""),
@@ -484,33 +714,47 @@ class AStockService:
                 "industry": str(row.get("industry", "") or ""),
                 "final_score": _safe_float(row.get("final_score")),
                 "operation_rating": str(row.get("operation_rating", "") or ""),
+                "deep_tech_rating": str(row.get("deep_tech_rating", "") or ""),
+                "is_actionable": is_actionable,
+                "is_shortlist": is_shortlist,
+                "pool_source": str(row.get("pool_source", "") or ""),
                 "price_at_rec": _safe_float(row.get("price_at_rec")),
-                "ret_t1": _safe_float(row.get("ret_t1_net") or row.get("ret_t1")),
-                "excess_t1": _safe_float(row.get("excess_t1_net") or row.get("excess_t1")),
-                "ret_t5": _safe_float(row.get("ret_t5_net") or row.get("ret_t5")),
-                "excess_t5": _safe_float(row.get("excess_t5_net") or row.get("excess_t5")),
-                "ret_t20": _safe_float(row.get("ret_t20_net") or row.get("ret_t20")),
-                "excess_t20": _safe_float(row.get("excess_t20_net") or row.get("excess_t20")),
+                # 主展示：净收益优先
+                "ret_t1": _prefer_net(row, "ret_t1_net", "ret_t1"),
+                "excess_t1": _prefer_net(row, "excess_t1_net", "excess_t1"),
+                "ret_t5": _prefer_net(row, "ret_t5_net", "ret_t5"),
+                "excess_t5": _prefer_net(row, "excess_t5_net", "excess_t5"),
+                "ret_t20": _prefer_net(row, "ret_t20_net", "ret_t20"),
+                "excess_t20": _prefer_net(row, "excess_t20_net", "excess_t20"),
+                # 毛收益对照
+                "ret_t1_gross": _safe_float(row.get("ret_t1")),
+                "excess_t1_gross": _safe_float(row.get("excess_t1")),
+                "ret_t5_gross": _safe_float(row.get("ret_t5")),
+                "excess_t5_gross": _safe_float(row.get("excess_t5")),
+                # 可交易口径（T+1）
+                "ret_t1_tradable": _prefer_net(row, "ret_t1_tradable_net", "ret_t1_tradable"),
+                "excess_t1_tradable": _prefer_net(row, "excess_t1_tradable_net", "excess_t1_tradable"),
             }
             items.append(item)
-            t1 = item["ret_t1"]
-            if t1 is not None:
-                ret_t1_vals.append(t1)
-                t1_count += 1
-                if t1 > 0:
-                    win_t1 += 1
-            t5 = item["ret_t5"]
-            if t5 is not None:
-                ret_t5_vals.append(t5)
-                t5_count += 1
-                if t5 > 0:
-                    win_t5 += 1
+
         items.sort(key=lambda x: x.get("report_date", ""), reverse=True)
-        stats = {
-            "total_count": len(items),
-            "avg_ret_t1": (sum(ret_t1_vals) / len(ret_t1_vals)) if ret_t1_vals else None,
-            "avg_ret_t5": (sum(ret_t5_vals) / len(ret_t5_vals)) if ret_t5_vals else None,
-            "win_rate_t1": (win_t1 / t1_count * 100.0) if t1_count > 0 else None,
-            "win_rate_t5": (win_t5 / t5_count * 100.0) if t5_count > 0 else None,
+
+        actionable_items = [it for it in items if it.get("is_actionable") is True]
+        shortlist_items = [
+            it for it in items
+            if it.get("is_shortlist") is True or _is_shortlist_pool(str(it.get("pool_source") or ""))
+        ]
+
+        return {
+            "return_basis": "net",
+            "track_label": "top_n",
+            "note": (
+                "收益默认优先净收益（已扣手续费估算）；"
+                "精选口径 is_actionable 与 a_stock 报告可操作池一致；"
+                "文件名 top15_performance.csv 为历史兼容命名，实际跟踪 TOP-N。"
+            ),
+            "stats": _compute_return_stats(items),
+            "actionable_stats": _compute_return_stats(actionable_items),
+            "shortlist_stats": _compute_return_stats(shortlist_items),
+            "items": items,
         }
-        return {"stats": stats, "items": items}
